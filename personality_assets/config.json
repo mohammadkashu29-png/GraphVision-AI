@@ -1,0 +1,16 @@
+{
+    "visual_extractor": "ResNet50",
+    "visual_dimensions": 2048,
+    "structural_extractor": "OpenCV",
+    "structural_dimensions": 9,
+    "fusion_dimensions": 2057,
+    "output_traits": [
+        "Openness",
+        "Conscientiousness",
+        "Extraversion",
+        "Agreeableness",
+        "Neuroticism"
+    ],
+    "model_status": "UNTRAINED",
+    "prediction_status": "NOT_VALIDATED"
+}
