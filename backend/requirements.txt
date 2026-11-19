@@ -1,0 +1,15 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17
+opencv-python==4.10.0.84
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.14.1
+torch==2.5.1
+torchvision==0.20.1
+scikit-learn==1.5.2
+sqlalchemy==2.0.36
+reportlab==4.2.5
+pillow
+transformers>=4.45,<5
+sentencepiece>=0.2.0

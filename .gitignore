@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Node
+node_modules/
+dist/
+
+# Runtime data: uploaded handwriting/signature images and the SQLite DB (personal/biometric data)
+backend/data/*
+!backend/data/.gitkeep
+
+# Model artifacts and datasets: keep out of git (large; may be derived from licensed data)
+backend/checkpoints/*
+!backend/checkpoints/.gitkeep
+*.pt
+*.pth
+CEDAR/
+IAM/
+.env
+.DS_Store
+
+# Backup and duplicate project folders
+/backend - Copy/
+/backend_backup_challenge/
+/frontend_backup_challenge/
+/webapp - Copy/
+
+# Private handwriting and signature samples
+/GraphVision_HTR_Test_Samples/
+/test_signatures/
+
+# Large trained model files
+*.keras
+*.pth
+*.pt
+
+# Python caches and test artifacts
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment files
+.env*
+!.env.example
+
+# Generated test outputs and handwriting samples
+/test_results/
+
+# Older nested application snapshot
+/webapp/
+
+# Accidental root-level npm lockfile
+/package-lock.json
