@@ -1,6 +1,6 @@
 import base64
 import time
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -38,45 +38,99 @@ def _stroke_histogram(dist: np.ndarray, n_bins: int = 32):
     return [{"bin": f"{edges[i]:.2f}", "count": int(hist[i])} for i in range(n_bins) if hist[i] > 0]
 
 
-def _detect_word_gaps(fg: np.ndarray):
-    """Paper Eq. 5–6: vertical projection V(x); runs of low-foreground columns between
-    ink regions are candidate word spaces."""
+def _gaps_in_band(band_fg: np.ndarray, min_gap_px: int = 4) -> Tuple[List[int], np.ndarray]:
+    """Detect low-foreground horizontal runs within a single line band."""
+    if band_fg.size == 0:
+        return [], np.zeros(0, dtype=int)
+
+    col_sum = band_fg.sum(axis=0)
+    max_col = float(col_sum.max())
+    if max_col <= 0:
+        return [], col_sum
+
+    gap_thr = max(0.0, 0.10 * max_col)
+    low_ink = col_sum <= gap_thr
+    active = col_sum > gap_thr
+    if not active.any():
+        return [], col_sum
+
+    first = int(np.argmax(active))
+    last = int(len(active) - 1 - np.argmax(active[::-1]))
+
+    gaps: List[int] = []
+    run = 0
+    for x in range(first, last + 1):
+        if low_ink[x]:
+            run += 1
+        else:
+            if run >= min_gap_px:
+                gaps.append(run)
+            run = 0
+    return gaps, col_sum
+
+
+def _detect_word_gaps(
+    fg: np.ndarray,
+    line_bands: Optional[List[dict]] = None,
+    stroke_width: float = 0.0,
+) -> Tuple[List[int], np.ndarray]:
+    """Paper Eq. 5-6: vertical projection V(x); runs of low-foreground columns
+    between ink regions are candidate word spaces (evaluated per line band when available)."""
     V = fg.sum(axis=0)
-    ink = V > 0
-    gap_widths = []
-    if ink.any():
-        first = int(np.argmax(ink))
-        last = int(len(ink) - 1 - np.argmax(ink[::-1]))
-        run = 0
-        for x in range(first, last + 1):
-            if not ink[x]:
-                run += 1
-            elif run > 0:
-                gap_widths.append(run)
-                run = 0
-    return gap_widths, V
+    min_gap = max(4, int(round(stroke_width * 1.5))) if stroke_width > 0 else 4
+
+    if line_bands:
+        all_gaps: List[int] = []
+        for band in line_bands:
+            sub = fg[band["top"] : band["bottom"] + 1]
+            band_gaps, _ = _gaps_in_band(sub, min_gap_px=min_gap)
+            if len(band_gaps) >= 2:
+                med = float(np.median(band_gaps))
+                word_level = [g for g in band_gaps if g >= max(min_gap, 0.8 * med)]
+                all_gaps.extend(word_level if word_level else band_gaps)
+            else:
+                all_gaps.extend(band_gaps)
+        return all_gaps, V
+
+    fallback_gaps, _ = _gaps_in_band(fg, min_gap_px=min_gap)
+    return fallback_gaps, V
 
 
 def _detect_line_bands(fg: np.ndarray):
-    """Paper Eq. 7–8: horizontal projection P(y) + SciPy peak detection identifies
-    handwriting-line regions; a linear fit of line-position centroids yields the
-    preliminary baseline-related angle."""
+    """Paper Eq. 7-8: horizontal projection P(y) + SciPy peak detection identifies
+    handwriting-line regions bounded by inter-line valleys."""
     h, w = fg.shape
     P = fg.sum(axis=1).astype(float)
     if P.max() <= 0:
         return 0, [], P
-    smooth = uniform_filter1d(P, size=max(3, (w // 150) * 2 + 1))
-    peaks, _ = find_peaks(smooth, prominence=0.20 * float(smooth.max()),
-                          distance=max(10, int(h * 0.04)))
-    row_thr = 0.12 * float(smooth.max())
+
+    smooth = uniform_filter1d(P, size=max(3, min(31, (w // 150) * 2 + 1)))
+    peaks, _ = find_peaks(
+        smooth,
+        prominence=0.15 * float(smooth.max()),
+        distance=max(8, int(h * 0.03)),
+    )
+    if len(peaks) == 0:
+        return 0, [], P
+
     bands = []
-    for p in peaks:
-        top, bottom = int(p), int(p)
-        while top - 1 >= 0 and smooth[top - 1] >= row_thr:
+    for idx, p in enumerate(peaks):
+        peak_val = float(smooth[p])
+        thr = max(0.35 * peak_val, 0.08 * float(smooth.max()))
+
+        prev_peak = int(peaks[idx - 1]) if idx > 0 else 0
+        next_peak = int(peaks[idx + 1]) if idx + 1 < len(peaks) else h - 1
+
+        top = int(p)
+        while top - 1 > prev_peak and smooth[top - 1] >= thr and smooth[top - 1] <= smooth[top] + 1e-6:
             top -= 1
-        while bottom + 1 < h and smooth[bottom + 1] >= row_thr:
+
+        bottom = int(p)
+        while bottom + 1 < next_peak and smooth[bottom + 1] >= thr and smooth[bottom + 1] <= smooth[bottom] + 1e-6:
             bottom += 1
+
         bands.append({"top": top, "bottom": bottom, "peak": int(p)})
+
     return len(bands), bands, P
 
 
@@ -94,11 +148,13 @@ def analyze_handwriting(image_bytes: bytes,
     # 1. Grayscale conversion (paper III-B)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-    # 2. Otsu thresholding — inverted so ink becomes the white foreground
-    otsu_threshold, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # 2. Otsu thresholding - inverted so ink becomes the white foreground
+    otsu_threshold, binary = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
     binary = binary.astype(np.uint8)
 
-    # 3–4. Morphological opening with a long horizontal kernel detects ruled lines;
+    # 3-4. Morphological opening with a long horizontal kernel detects ruled lines;
     #       detected lines are removed (may clip strokes that overlap them, as the paper notes)
     kernel_len = max(int(w * 0.15), 25)
     h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_len, 1))
@@ -125,9 +181,9 @@ def analyze_handwriting(image_bytes: bytes,
     total = fg.size
     warnings = []
     if n_fg == 0:
-        warnings.append("No handwriting foreground was detected after preprocessing — features default to zero/null.")
+        warnings.append("No handwriting foreground was detected after preprocessing - features default to zero/null.")
 
-    # ---- Eight quantitative features (paper Eq. 1–9) ----
+    # ---- Eight quantitative features (paper Eq. 1-9) ----
     ink_density = n_fg / total                                     # Eq. 1
     if n_fg > 0:
         ys, xs = np.where(fg)
@@ -141,25 +197,24 @@ def analyze_handwriting(image_bytes: bytes,
     d_mean = float(d_vals.mean()) if d_vals.size else 0.0
     stroke_width = 2.0 * d_mean                                    # Eq. 4
 
-    gap_widths, V = _detect_word_gaps(fg)
+    n_lines, line_bands, P = _detect_line_bands(fg)                # Eq. 8 -> L
+    gap_widths, V = _detect_word_gaps(fg, line_bands=line_bands, stroke_width=stroke_width)
     word_spaces = len(gap_widths)                                  # Ng
     average_gap = float(np.mean(gap_widths)) if gap_widths else 0.0  # Eq. 6
 
-    n_lines, line_bands, P = _detect_line_bands(fg)                # Eq. 8 -> L
-    baseline_angle = None                                          # Eq. 7 -> θ
+    baseline_angle = None                                          # Eq. 7 -> theta
     if n_lines >= 2 and n_fg > 0:
-        pts = []
+        line_angles = []
         for band in line_bands:
-            sub = fg[band["top"]:band["bottom"] + 1]
-            if sub.any():
-                yy, xx = np.where(sub)
-                pts.append((float(xx.mean()), float(band["top"] + yy.mean())))
-        if len(pts) >= 2:
-            px = np.array([p[0] for p in pts])
-            py = np.array([p[1] for p in pts])
-            if float(px.std()) > 1e-6:
-                slope = float(np.polyfit(px, py, 1)[0])
-                baseline_angle = float(np.degrees(np.arctan(slope)))
+            sub = fg[band["top"] : band["bottom"] + 1]
+            yy, xx = np.where(sub)
+            if xx.size >= 20 and float(xx.std()) > 10.0:
+                slope_i = float(np.polyfit(xx, yy, 1)[0])
+                ang_i = float(np.degrees(np.arctan(slope_i)))
+                if -35.0 <= ang_i <= 35.0:
+                    line_angles.append(ang_i)
+        if line_angles:
+            baseline_angle = float(np.median(line_angles))
 
     features = {
         "ink_density": round(ink_density, 6),
